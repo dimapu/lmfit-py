@@ -3,7 +3,6 @@ import numpy as np
 from numpy.testing import assert_allclose
 import pytest
 from scipy.optimize import basinhopping
-from scipy.version import version as scipy_version
 
 import lmfit
 
@@ -17,12 +16,7 @@ def test_basinhopping_lmfit_vs_scipy():
     minimizer_kwargs = {'method': 'L-BFGS-B'}
     x0 = [1.]
 
-    # FIXME - remove after requirement for scipy >= 0.19
-    major, minor, _micro = scipy_version.split('.', 2)
-    if int(major) < 1 and int(minor) < 19:
-        ret = basinhopping(func, x0, minimizer_kwargs=minimizer_kwargs)
-    else:
-        ret = basinhopping(func, x0, minimizer_kwargs=minimizer_kwargs, seed=7)
+    ret = basinhopping(func, x0, minimizer_kwargs=minimizer_kwargs, seed=7)
 
     # lmfit
     def residual(params):
@@ -36,7 +30,7 @@ def test_basinhopping_lmfit_vs_scipy():
     out = mini.minimize(method='basinhopping', **kws)
 
     assert_allclose(out.residual, ret.fun)
-    assert_allclose(out.params['x'].value, ret.x)
+    assert_allclose(out.params['x'].value, ret.x, rtol=1e-5)
 
 
 def test_basinhopping_2d_lmfit_vs_scipy():
@@ -48,13 +42,7 @@ def test_basinhopping_2d_lmfit_vs_scipy():
     minimizer_kwargs = {'method': 'L-BFGS-B'}
     x0 = [1.0, 1.0]
 
-    # FIXME - remove after requirement for scipy >= 0.19
-    major, minor, _micro = scipy_version.split('.', 2)
-    if int(major) < 1 and int(minor) < 19:
-        ret = basinhopping(func2d, x0, minimizer_kwargs=minimizer_kwargs)
-    else:
-        ret = basinhopping(func2d, x0, minimizer_kwargs=minimizer_kwargs,
-                           seed=7)
+    ret = basinhopping(func2d, x0, minimizer_kwargs=minimizer_kwargs, seed=7)
 
     # lmfit
     def residual_2d(params):
@@ -70,8 +58,8 @@ def test_basinhopping_2d_lmfit_vs_scipy():
     out = mini.minimize(method='basinhopping', **kws)
 
     assert_allclose(out.residual, ret.fun)
-    assert_allclose(out.params['x0'].value, ret.x[0])
-    assert_allclose(out.params['x1'].value, ret.x[1])
+    assert_allclose(out.params['x0'].value, ret.x[0], rtol=1e-5)
+    assert_allclose(out.params['x1'].value, ret.x[1], rtol=1e-5)
 
 
 def test_basinhopping_Alpine02(minimizer_Alpine02):

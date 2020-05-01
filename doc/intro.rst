@@ -43,11 +43,12 @@ sine wave, and so write an objective function like this::
     from numpy import exp, sin
 
 
-    def residual(vars, x, data, eps_data):
-        amp = vars[0]
-        phaseshift = vars[1]
-        freq = vars[2]
-        decay = vars[3]
+    def residual(variables, x, data, eps_data):
+        """Model a decaying sine wave and subtract data."""
+        amp = variables[0]
+        phaseshift = variables[1]
+        freq = variables[2]
+        decay = variables[3]
 
         model = amp * sin(x*freq + phaseshift) * exp(-x*x*decay)
 
@@ -57,8 +58,8 @@ To perform the minimization with :mod:`scipy.optimize`, one would do this::
 
     from scipy.optimize import leastsq
 
-    vars = [10.0, 0.2, 3.0, 0.007]
-    out = leastsq(residual, vars, args=(x, data, eps_data))
+    variables = [10.0, 0.2, 3.0, 0.007]
+    out = leastsq(residual, variables, args=(x, data, eps_data))
 
 Though it is wonderful to be able to use Python for such optimization
 problems, and the SciPy library is robust and easy to use, the approach
@@ -67,8 +68,8 @@ Fortran.  There are several practical challenges to using this approach,
 including:
 
   a) The user has to keep track of the order of the variables, and their
-     meaning -- vars[0] is the amplitude, vars[2] is the frequency, and so
-     on, although there is no intrinsic meaning to this order.
+     meaning -- variables[0] is the amplitude, variables[2] is the frequency,
+     and so on, although there is no intrinsic meaning to this order.
 
   b) If the user wants to fix a particular variable (*not* vary it in the
      fit), the residual function has to be altered to have fewer variables,
@@ -155,7 +156,7 @@ modeled, and is separate from the choice of parameters to be varied in the
 fit.
 
 
-The `params` object can be copied and modified to make many user-level
+The ``params`` object can be copied and modified to make many user-level
 changes to the model and fitting process.  Of course, most of the
 information about how your data is modeled goes into the objective
 function, but the approach here allows some external control; that is,

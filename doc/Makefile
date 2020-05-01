@@ -2,48 +2,54 @@
 #
 
 # You can set these variables from the command line.
-SPHINXOPTS    =
 SPHINXBUILD   = sphinx-build
-PAPER         =
+SPHINX_OPTS = -W
+SPHINX_DEBUGOPTS = --keep-going -n
 BUILDDIR      = _build
-INSTALLDIR = /home/newville/public_html/lmfit/
-
 
 # Internal variables.
+PAPER         =
 PAPEROPT_a4     = -D latex_paper_size=a4
 PAPEROPT_letter = -D latex_paper_size=letter
-ALLSPHINXOPTS   = -d $(BUILDDIR)/doctrees $(PAPEROPT_$(PAPER)) $(SPHINXOPTS) .
+SPHINX_OUTPUT   = -d $(BUILDDIR)/doctrees $(PAPEROPT_$(PAPER))
+ALLSPHINXOPTS   = $(SPHINX_OUTPUT) $(SPHINXOPTS) .
 
 .PHONY: help clean html dirhtml pickle json htmlhelp qthelp latex changes linkcheck doctest latexpdf htmlzip
-.PHONY: all install pdf
+.PHONY: all pdf gallery debug
 
-html:
+html:  gallery
 	cp sphinx/ext_mathjax.py extensions.py
-	$(SPHINXBUILD) -b html $(ALLSPHINXOPTS) $(BUILDDIR)/html
+	$(SPHINXBUILD) -b html $(SPHINX_OUTPUT) $(SPHINX_OPTS) . $(BUILDDIR)/html
 	@echo
 	@echo "html build finished: $(BUILDDIR)/html."
 
+debug:  gallery
+	cp sphinx/ext_mathjax.py extensions.py
+	$(SPHINXBUILD) -b html $(SPHINX_OUTPUT) $(SPHINX_DEBUGOPTS) . $(BUILDDIR)/html
+	@echo
+	@echo "html build finished: $(BUILDDIR)/html."
+
+gallery: examples/index.rst
+
+examples/index.rst:
+	./doc_examples_to_gallery.py
+
 htmlzip: html
-	cp sphinx/ext_pngmath.py extensions.py
-	$(SPHINXBUILD) -b html $(ALLSPHINXOPTS) $(BUILDDIR)/lmfit_doc
+	cp sphinx/ext_mathjax.py extensions.py
+	$(SPHINXBUILD) -b html $(SPHINX_OUTPUT) $(SPHINX_OPTS) . $(BUILDDIR)/lmfit_doc
 	cd $(BUILDDIR) && zip -pur html/lmfit_doc.zip lmfit_doc
 
-epub:
-	cp sphinx/ext_pngmath.py extensions.py
-	$(SPHINXBUILD) -b epub  $(ALLSPHINXOPTS) $(BUILDDIR)/epub
+epub: html
+	cp sphinx/ext_mathjax.py extensions.py
+	$(SPHINXBUILD) -b epub  $(SPHINX_OUTPUT) $(SPHINX_OPTS) . $(BUILDDIR)/epub
 	cp -pr $(BUILDDIR)/epub/*.epub $(BUILDDIR)/html/.
 
 pdf: latex
+	cp sphinx/ext_imgmath.py extensions.py
 	cd $(BUILDDIR)/latex && make all-pdf
 	cp -pr $(BUILDDIR)/latex/lmfit.pdf $(BUILDDIR)/html/.
 
 all: html htmlzip epub pdf
-
-install: all
-	cd $(BUILDDIR)/latex && pdflatex lmfit.tex
-	cd $(BUILDDIR)/latex && makeindex -s python.ist lmfit.idx
-	cd $(BUILDDIR)/latex && pdflatex lmfit.tex
-	cp -pr $(BUILDDIR)/html/* $(INSTALLDIR)/.
 
 help:
 	@echo "Please use \`make <target>' where <target> is one of"
@@ -60,53 +66,59 @@ help:
 
 clean:
 	-rm -rf $(BUILDDIR)/*
+	-rm -f extensions.py
+	-rm -f *.dat *.sav *.csv
+	-rm -rf examples/*
+	-rm -rf ../examples/documentation
 
-dirhtml:
-	$(SPHINXBUILD) -b dirhtml $(ALLSPHINXOPTS) $(BUILDDIR)/dirhtml
+dirhtml:  gallery
+	$(SPHINXBUILD) -b dirhtml $(SPHINX_OUTPUT) $(SPHINX_OPTS) . $(BUILDDIR)/dirhtml
 	@echo
 	@echo "Build finished. The HTML pages are in $(BUILDDIR)/dirhtml."
 
-pickle:
-	$(SPHINXBUILD) -b pickle $(ALLSPHINXOPTS) $(BUILDDIR)/pickle
+pickle:  gallery
+	$(SPHINXBUILD) -b pickle $(SPHINX_OUTPUT) $(SPHINX_OPTS) . $(BUILDDIR)/pickle
 	@echo
 	@echo "Build finished; now you can process the pickle files."
 
-json:
-	$(SPHINXBUILD) -b json $(ALLSPHINXOPTS) $(BUILDDIR)/json
+json:  gallery
+	$(SPHINXBUILD) -b json $(SPHINX_OUTPUT) $(SPHINX_OPTS) . $(BUILDDIR)/json
 	@echo
 	@echo "Build finished; now you can process the JSON files."
 
-htmlhelp:
-	$(SPHINXBUILD) -b htmlhelp $(ALLSPHINXOPTS) $(BUILDDIR)/htmlhelp
+htmlhelp:  gallery
+	$(SPHINXBUILD) -b htmlhelp $(SPHINX_OUTPUT) $(SPHINX_OPTS) . $(BUILDDIR)/htmlhelp
 	@echo
 	@echo "Build finished; now you can run HTML Help Workshop with the" \
 	      ".hhp project file in $(BUILDDIR)/htmlhelp."
 
-latex:
-	$(SPHINXBUILD) -b latex $(ALLSPHINXOPTS) _build/latex
+latex: gallery
+	cp sphinx/ext_imgmath.py extensions.py
+	$(SPHINXBUILD) -b latex $(SPHINX_OUTPUT) $(SPHINX_OPTS) . _build/latex
 	@echo
 	@echo "Build finished; the LaTeX files are in _build/latex."
 	@echo "Run \`make all-pdf' or \`make all-ps' in that directory to" \
 	      "run these through (pdf)latex."
 
 latexpdf:
-	$(SPHINXBUILD) -b latex $(ALLSPHINXOPTS) _build/latex
+	cp sphinx/ext_imgmath.py extensions.py
+	$(SPHINXBUILD) -b latex $(SPHINX_OUTPUT) $(SPHINX_OPTS) . _build/latex
 	@echo "Running LaTeX files through pdflatex..."
 	make -C _build/latex all-pdf
 	@echo "pdflatex finished; the PDF files are in _build/latex."
 
 changes:
-	$(SPHINXBUILD) -b changes $(ALLSPHINXOPTS) $(BUILDDIR)/changes
+	$(SPHINXBUILD) -b changes $(SPHINX_OUTPUT) $(SPHINX_OPTS) . $(BUILDDIR)/changes
 	@echo
 	@echo "The overview file is in $(BUILDDIR)/changes."
 
 linkcheck:
-	$(SPHINXBUILD) -b linkcheck $(ALLSPHINXOPTS) $(BUILDDIR)/linkcheck
+	$(SPHINXBUILD) -b linkcheck $(SPHINX_OUTPUT) $(SPHINX_OPTS) . $(BUILDDIR)/linkcheck
 	@echo
 	@echo "Link check complete; look for any errors in the above output " \
 	      "or in $(BUILDDIR)/linkcheck/output.txt."
 
 doctest:
-	$(SPHINXBUILD) -b doctest $(ALLSPHINXOPTS) $(BUILDDIR)/doctest
+	$(SPHINXBUILD) -b doctest $(SPHINX_OUTPUT) $(SPHINX_OPTS) . $(BUILDDIR)/doctest
 	@echo "Testing of doctests in the sources finished, look at the " \
 	      "results in $(BUILDDIR)/doctest/output.txt."

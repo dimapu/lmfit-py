@@ -1,8 +1,15 @@
 """Functions to display fitting results and confidence intervals."""
 from math import log10
 import re
+import warnings
 
-from .parameter import Parameters
+import numpy as np
+
+try:
+    import numdifftools  # noqa: F401
+    HAS_NUMDIFFTOOLS = True
+except ImportError:
+    HAS_NUMDIFFTOOLS = False
 
 
 def alphanumeric_sort(s, _nsre=re.compile('([0-9]+)')):
@@ -48,7 +55,7 @@ def gformat(val, length=11):
 
     Notes
     ------
-     Positive values will have leading blank.
+    Positive values will have leading blank.
 
     """
     try:
@@ -67,7 +74,7 @@ def gformat(val, length=11):
         if expon > 0:
             prec -= expon
     fmt = '{0: %i.%i%s}' % (length, prec, form)
-    return fmt.format(val)
+    return fmt.format(val)[:length]
 
 
 CORREL_HEAD = '[[Correlations]] (unreported correlations are < %.3f)'
@@ -82,7 +89,7 @@ def fit_report(inpars, modelpars=None, show_correl=True, min_correl=0.1,
 
     Parameters
     ----------
-    inpars  : Parameters
+    inpars : Parameters
        Input Parameters from fit or MinimizerResult returned from a fit.
     modelpars : Parameters, optional
        Known Model Parameters.
@@ -103,6 +110,7 @@ def fit_report(inpars, modelpars=None, show_correl=True, min_correl=0.1,
        Multi-line text of fit report.
 
     """
+    from .parameter import Parameters
     if isinstance(inpars, Parameters):
         result, params = None, inpars
     if hasattr(inpars, 'params'):
@@ -122,6 +130,7 @@ def fit_report(inpars, modelpars=None, show_correl=True, min_correl=0.1,
 
     buff = []
     add = buff.append
+    namelen = max([len(n) for n in parnames])
     if result is not None:
         add("[[Fit Statistics]]")
         add("    # fitting method   = %s" % (result.method))
@@ -132,8 +141,24 @@ def fit_report(inpars, modelpars=None, show_correl=True, min_correl=0.1,
         add("    reduced chi-square = %s" % getfloat_attr(result, 'redchi'))
         add("    Akaike info crit   = %s" % getfloat_attr(result, 'aic'))
         add("    Bayesian info crit = %s" % getfloat_attr(result, 'bic'))
+        if not result.errorbars:
+            add("##  Warning: uncertainties could not be estimated:")
+            if result.method in ('leastsq', 'least_squares') or HAS_NUMDIFFTOOLS:
+                parnames_varying = [par for par in result.params
+                                    if result.params[par].vary]
+                for name in parnames_varying:
+                    par = params[name]
+                    space = ' '*(namelen-len(name))
+                    if par.init_value and np.allclose(par.value, par.init_value):
+                        add('    %s:%s  at initial value' % (name, space))
+                    if (np.allclose(par.value, par.min) or np.allclose(par.value, par.max)):
+                        add('    %s:%s  at boundary' % (name, space))
+            else:
+                add("    this fitting method does not natively calculate uncertainties")
+                add("    and numdifftools is not installed for lmfit to do this. Use")
+                add("    `pip install numdifftools` for lmfit to estimate uncertainties")
+                add("    with this fitting method.")
 
-    namelen = max([len(n) for n in parnames])
     add("[[Variables]]")
     for name in parnames:
         par = params[name]
@@ -147,13 +172,11 @@ def fit_report(inpars, modelpars=None, show_correl=True, min_correl=0.1,
         try:
             sval = gformat(par.value)
         except (TypeError, ValueError):
-            sval = 'Non Numeric Value?'
-
+            sval = ' Non Numeric Value?'
         if par.stderr is not None:
             serr = gformat(par.stderr)
-
             try:
-                spercent = '({0:.2%})'.format(abs(par.stderr/par.value))
+                spercent = '({:.2%})'.format(abs(par.stderr/par.value))
             except ZeroDivisionError:
                 spercent = ''
             sval = '%s +/-%s %s' % (sval, serr, spercent)
@@ -188,13 +211,119 @@ def fit_report(inpars, modelpars=None, show_correl=True, min_correl=0.1,
     return '\n'.join(buff)
 
 
+def fitreport_html_table(result, show_correl=True, min_correl=0.1):
+    """Generate a report of the fitting result as an HTML table."""
+    html = []
+    add = html.append
+
+    def stat_row(label, val, val2=''):
+        add('<tr><td>%s</td><td>%s</td><td>%s</td></tr>' % (label, val, val2))
+
+    add('<h2>Fit Statistics</h2>')
+    add('<table>')
+    stat_row('fitting method', result.method)
+    stat_row('# function evals', result.nfev)
+    stat_row('# data points', result.ndata)
+    stat_row('# variables', result.nvarys)
+    stat_row('chi-square', gformat(result.chisqr))
+    stat_row('reduced chi-square', gformat(result.redchi))
+    stat_row('Akaike info crit.', gformat(result.aic))
+    stat_row('Bayesian info crit.', gformat(result.bic))
+    add('</table>')
+    add('<h2>Variables</h2>')
+    add(result.params._repr_html_())
+    if show_correl:
+        correls = []
+        parnames = list(result.params.keys())
+        for i, name in enumerate(result.params):
+            par = result.params[name]
+            if not par.vary:
+                continue
+            if hasattr(par, 'correl') and par.correl is not None:
+                for name2 in parnames[i+1:]:
+                    if (name != name2 and name2 in par.correl and
+                            abs(par.correl[name2]) > min_correl):
+                        correls.append((name, name2, par.correl[name2]))
+        if len(correls) > 0:
+            sort_correls = sorted(correls, key=lambda val: abs(val[2]))
+            sort_correls.reverse()
+            extra = '(unreported correlations are < %.3f)' % (min_correl)
+            add('<h2>Correlations %s</h2>' % extra)
+            add('<table>')
+            for name1, name2, val in sort_correls:
+                stat_row(name1, name2, "%.4f" % val)
+            add('</table>')
+    return ''.join(html)
+
+
+def params_html_table(params):
+    """Return an HTML representation of Parameters."""
+    has_err = any([p.stderr is not None for p in params.values()])
+    has_expr = any([p.expr is not None for p in params.values()])
+    has_brute = any([p.brute_step is not None for p in params.values()])
+
+    html = []
+    add = html.append
+
+    def cell(x, cat='td'):
+        return add('<%s> %s </%s>' % (cat, x, cat))
+
+    add('<table><tr>')
+    headers = ['name', 'value']
+    if has_err:
+        headers.extend(['standard error', 'relative error'])
+    headers.extend(['initial value', 'min', 'max', 'vary'])
+    if has_expr:
+        headers.append('expression')
+    if has_brute:
+        headers.append('brute step')
+    for h in headers:
+        cell(h, cat='th')
+    add('</tr>')
+
+    for par in params.values():
+        rows = [par.name, gformat(par.value)]
+        if has_err:
+            serr = ''
+            if par.stderr is not None:
+                serr = gformat(par.stderr)
+                try:
+                    spercent = '({:.2%})'.format(abs(par.stderr/par.value))
+                except ZeroDivisionError:
+                    spercent = ''
+            rows.extend([serr, spercent])
+        rows.extend((par.init_value, gformat(par.min),
+                     gformat(par.max), '%s' % par.vary))
+        if has_expr:
+            expr = ''
+            if par.expr is not None:
+                expr = par.expr
+            rows.append(expr)
+
+        if has_brute:
+            brute_step = 'None'
+            if par.brute_step is not None:
+                brute_step = gformat(par.brute_step)
+            rows.append(brute_step)
+
+        add('<tr>')
+        for r in rows:
+            cell(r)
+        add('</tr>')
+    add('</table>')
+    return ''.join(html)
+
+
 def report_errors(params, **kws):
     """Print a report for fitted params: see error_report()."""
+    warnings.warn("The function 'report_errors' is deprecated as of lmfit "
+                  "0.9.14 and will be removed in the next release. Please "
+                  "use 'report_fit' instead.", DeprecationWarning)
     print(fit_report(params, **kws))
 
 
 def report_fit(params, **kws):
-    """Print a report for fitted params: see error_report()."""
+    """Print a report of the fitting results."""
     print(fit_report(params, **kws))
 
 
@@ -219,7 +348,7 @@ def ci_report(ci, with_offset=True, ndigits=5):
     add = buff.append
 
     def convp(x):
-        """TODO: function docstring."""
+        """Convert probabilities into header for CI report."""
         if abs(x[0]) < 1.e-2:
             return "_BEST_"
         return "%.2f%%" % (x[0]*100)

@@ -1,10 +1,10 @@
-import warnings
+import warnings  # noqa: F401
 
 from asteval import Interpreter
 from asteval.astutils import NameFinder
-import numpy as np
+import numpy as np  # noqa: F401
 
-from ..model import Model
+from ..model import Model  # noqa: F401
 from ..models import ExponentialModel  # arbitrary default
 from ..parameter import check_ast_errors
 
@@ -46,7 +46,7 @@ _COMMON_EXAMPLES_DOC = """
     """
 
 
-class BaseFitter(object):
+class BaseFitter:
     __doc__ = _COMMON_DOC + """
 
     Parameters
@@ -55,6 +55,7 @@ class BaseFitter(object):
     model : lmfit.Model
         optional initial Model to use, maybe be set or changed later
     """ + _COMMON_EXAMPLES_DOC
+
     def __init__(self, data, model=None, **kwargs):
         self._data = data
         self.kwargs = kwargs
@@ -165,8 +166,8 @@ class BaseFitter(object):
                 self.namefinder.names = []
                 self.namefinder.generic_visit(par.ast)
                 for symname in self.namefinder.names:
-                    if (symname in self.current_params and
-                        symname not in par.deps):
+                    if (symname in self.current_params and symname not in
+                            par.deps):
                         par.deps.append(symname)
                 self.asteval.symtable[name] = par.value
                 if par.name is None:
@@ -223,13 +224,14 @@ class MPLFitter(BaseFitter):
         line
     **kwargs : independent variables or extra arguments, passed like `x=x`
         """ + _COMMON_EXAMPLES_DOC
-    def __init__(self, data, model=None, axes_style={},
-                data_style={}, init_style={}, best_style={}, **kwargs):
+
+    def __init__(self, data, model=None, axes_style={}, data_style={},
+                 init_style={}, best_style={}, **kwargs):
         self.axes_style = axes_style
         self.data_style = data_style
         self.init_style = init_style
         self.best_style = best_style
-        super(MPLFitter, self).__init__(data, model, **kwargs)
+        super().__init__(data, model, **kwargs)
 
     def plot(self, axes_style={}, data_style={}, init_style={}, best_style={},
              ax=None):
@@ -266,16 +268,16 @@ class MPLFitter(BaseFitter):
                               "that does not depend on matplotlib.")
 
         # Configure style
-        _axes_style= dict()  # none, but this is here for possible future use
+        _axes_style = {}  # none, but this is here for possible future use
         _axes_style.update(self.axes_style)
         _axes_style.update(axes_style)
-        _data_style= dict(color='blue', marker='o', linestyle='none')
+        _data_style = dict(color='blue', marker='o', linestyle='none')
         _data_style.update(**_normalize_kwargs(self.data_style, 'line2d'))
         _data_style.update(**_normalize_kwargs(data_style, 'line2d'))
         _init_style = dict(color='gray')
         _init_style.update(**_normalize_kwargs(self.init_style, 'line2d'))
         _init_style.update(**_normalize_kwargs(init_style, 'line2d'))
-        _best_style= dict(color='red')
+        _best_style = dict(color='red')
         _best_style.update(**_normalize_kwargs(self.best_style, 'line2d'))
         _best_style.update(**_normalize_kwargs(best_style, 'line2d'))
 
@@ -289,7 +291,7 @@ class MPLFitter(BaseFitter):
             ax.plot(indep_var, self._data, **_data_style)
         else:
             raise NotImplementedError("Cannot plot models with more than one "
-                                      "indepedent variable.")
+                                      "independent variable.")
         result = self.current_result  # alias for brevity
         if not result:
             ax.set(**_axes_style)

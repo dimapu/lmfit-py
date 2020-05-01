@@ -14,8 +14,8 @@ from scipy.stats import t
 from . import Minimizer, Parameter, Parameters, lineshapes
 from .confidence import conf_interval
 from .jsonutils import HAS_DILL, decode4js, encode4js
-from .minimizer import validate_nan_policy
-from .printfuncs import ci_report, fit_report
+from .minimizer import MinimizerResult
+from .printfuncs import ci_report, fit_report, fitreport_html_table
 
 # Use pandas.isnull for aligning missing data if pandas is available.
 # otherwise use numpy.isnan
@@ -181,7 +181,7 @@ def propagate_err(z, dz, option):
     return err
 
 
-class Model(object):
+class Model:
     """Model class."""
 
     _forbidden_args = ('data', 'weights', 'params')
@@ -191,7 +191,7 @@ class Model(object):
     _hint_names = ('value', 'vary', 'min', 'max', 'expr')
 
     def __init__(self, func, independent_vars=None, param_names=None,
-                 nan_policy='raise', missing=None, prefix='', name=None, **kws):
+                 nan_policy='raise', prefix='', name=None, **kws):
         """Create a model from a user-supplied model function.
 
         The model function will normally take an independent variable
@@ -211,8 +211,6 @@ class Model(object):
         nan_policy : str, optional
             How to handle NaN and missing values in data. Must be one of
             'raise' (default), 'propagate', or 'omit'. See Note below.
-        missing : str, optional
-            Synonym for 'nan_policy' for backward compatibility.
         prefix : str, optional
             Prefix used for the model.
         name : str, optional
@@ -236,12 +234,7 @@ class Model(object):
 
            - 'propagate' : do nothing
 
-           -  'omit' : (was 'drop') drop missing data
-
-        4. The `missing` argument is deprecated in lmfit 0.9.8 and will be
-        removed in a later version. Use `nan_policy` instead, as it is
-        consistent with the Minimizer class.
-
+           -  'omit' : drop missing data
 
         Examples
         --------
@@ -271,9 +264,7 @@ class Model(object):
         self.independent_vars = independent_vars
         self._func_allargs = []
         self._func_haskeywords = False
-        if missing is not None:
-            nan_policy = missing
-        self.nan_policy = validate_nan_policy(nan_policy)
+        self.nan_policy = nan_policy
 
         self.opts = kws
         self.param_hints = OrderedDict()
@@ -361,9 +352,8 @@ class Model(object):
 
         Returns
         -------
-        None or int
-            Return value from `fp.write()`. None for Python 2.7 and the
-            number of characters written in Python 3.
+        int
+            Return value from `fp.write()`: the number of characters written.
 
         See Also
         --------
@@ -445,7 +435,6 @@ class Model(object):
 
     def _set_paramhints_prefix(self):
         """Reset parameter hints for prefix: intended to be overwritten."""
-        pass
 
     @property
     def param_names(self):
@@ -464,25 +453,34 @@ class Model(object):
         """Build parameters from function arguments."""
         if self.func is None:
             return
+        # need to fetch the following from the function signature:
+        #   pos_args: list of positional argument names
+        #   kw_args: dict of keyword arguments with default values
+        #   keywords_:  name of **kws argument or None
+        # 1. limited support for asteval functions as the model functions:
         if hasattr(self.func, 'argnames') and hasattr(self.func, 'kwargs'):
             pos_args = self.func.argnames[:]
+            keywords_ = None
             kw_args = {}
             for name, defval in self.func.kwargs:
                 kw_args[name] = defval
-            keywords_ = list(kw_args.keys())
+        # 2. modern, best-practice approach: use inspect.signature
         else:
-            try:  # PY3
-                argspec = inspect.getfullargspec(self.func)
-                keywords_ = argspec.varkw
-            except AttributeError:  # PY2
-                argspec = inspect.getargspec(self.func)
-                keywords_ = argspec.keywords
-
-            pos_args = argspec.args
+            pos_args = []
             kw_args = {}
-            if argspec.defaults is not None:
-                for val in reversed(argspec.defaults):
-                    kw_args[pos_args.pop()] = val
+            keywords_ = None
+            sig = inspect.signature(self.func)
+            for fnam, fpar in sig.parameters.items():
+                if fpar.kind == fpar.VAR_KEYWORD:
+                    keywords_ = fnam
+                elif fpar.kind == fpar.POSITIONAL_OR_KEYWORD:
+                    if fpar.default == fpar.empty:
+                        pos_args.append(fnam)
+                    else:
+                        kw_args[fnam] = fpar.default
+                elif fpar.kind == fpar.VAR_POSITIONAL:
+                    raise ValueError("varargs '*%s' is not supported" % fnam)
+        # inspection done
 
         self._func_haskeywords = keywords_ is not None
         self._func_allargs = pos_args + list(kw_args.keys())
@@ -747,7 +745,15 @@ class Model(object):
         The "ravels" throughout are necessary to support pandas.Series.
 
         """
-        diff = self.eval(params, **kwargs) - data
+        model = self.eval(params, **kwargs)
+        if self.nan_policy == 'raise' and not np.all(np.isfinite(model)):
+            msg = ('The model function generated NaN values and the fit '
+                   'aborted! Please check your model function and/or set '
+                   'boundaries on parameters where applicable. In cases like '
+                   'this, using "nan_policy=\'omit\'" will probably not work.')
+            raise ValueError(msg)
+
+        diff = model - data
 
         if diff.dtype == np.complex:
             # data/model are complex
@@ -858,7 +864,7 @@ class Model(object):
 
     def fit(self, data, params=None, weights=None, method='leastsq',
             iter_cb=None, scale_covar=True, verbose=False, fit_kws=None,
-            nan_policy=None, calc_covar=True, **kwargs):
+            nan_policy=None, calc_covar=True, max_nfev=None, **kwargs):
         """Fit the model to the data using the supplied Parameters.
 
         Parameters
@@ -888,6 +894,9 @@ class Model(object):
             Whether to calculate the covariance matrix (default is True) for
             solvers other than `leastsq` and `least_squares`. Requires the
             `numdifftools` package to be installed.
+        max_nfev: int or None, optional
+            Maximum number of function evaluations (default is None). The
+            default value depends on the fitting method.
         **kwargs: optional
             Arguments to pass to the  model function, possibly overriding
             params.
@@ -946,8 +955,8 @@ class Model(object):
         # All remaining kwargs should correspond to independent variables.
         for name in kwargs:
             if name not in self.independent_vars:
-                warnings.warn("The keyword argument %s does not" % name +
-                              "match any arguments of the model function." +
+                warnings.warn("The keyword argument %s does not " % name +
+                              "match any arguments of the model function. " +
                               "It will be ignored.", UserWarning)
 
         # If any parameter is not initialized raise a more helpful error.
@@ -976,7 +985,7 @@ class Model(object):
 
         # Handle null/missing values.
         if nan_policy is not None:
-            self.nan_policy = validate_nan_policy(nan_policy)
+            self.nan_policy = nan_policy
 
         mask = None
         if self.nan_policy == 'omit':
@@ -1000,7 +1009,7 @@ class Model(object):
         output = ModelResult(self, params, method=method, iter_cb=iter_cb,
                              scale_covar=scale_covar, fcn_kws=kwargs,
                              nan_policy=self.nan_policy, calc_covar=calc_covar,
-                             **fit_kws)
+                             max_nfev=max_nfev, **fit_kws)
         output.fit(data=data, weights=weights)
         output.components = self.components
         return output
@@ -1113,7 +1122,7 @@ class CompositeModel(Model):
                                self.right._reprstring(long=long))
 
     def eval(self, params=None, **kwargs):
-        """TODO: docstring in public method."""
+        """Evaluate model function for composite model."""
         return self.op(self.left.eval(params=params, **kwargs),
                        self.right.eval(params=params, **kwargs))
 
@@ -1256,9 +1265,6 @@ def load_modelresult(fname, funcdefs=None):
     modres = ModelResult(Model(lambda x: x, None), params)
     with open(fname) as fh:
         mresult = modres.load(fh, funcdefs=funcdefs)
-        mresult.data = mresult.userargs[0]
-        mresult.weights = mresult.userargs[1]
-        mresult.init_params = mresult.model.make_params(**mresult.init_values)
     return mresult
 
 
@@ -1274,7 +1280,7 @@ class ModelResult(Minimizer):
     def __init__(self, model, params, data=None, weights=None,
                  method='leastsq', fcn_args=None, fcn_kws=None,
                  iter_cb=None, scale_covar=True, nan_policy='raise',
-                 calc_covar=True, **fit_kws):
+                 calc_covar=True, max_nfev=None, **fit_kws):
         """
         Parameters
         ----------
@@ -1302,6 +1308,9 @@ class ModelResult(Minimizer):
             Whether to calculate the covariance matrix (default is True) for
             solvers other than `leastsq` and `least_squares`. Requires the
             `numdifftools` package to be installed.
+        max_nfev: int or None, optional
+            Maximum number of function evaluations (default is None). The
+            default value depends on the fitting method.
         **fit_kws : optional
             Keyword arguments to send to minimization routine.
 
@@ -1313,9 +1322,11 @@ class ModelResult(Minimizer):
         self.ci_out = None
         self.user_options = None
         self.init_params = deepcopy(params)
-        Minimizer.__init__(self, model._residual, params, fcn_args=fcn_args,
-                           fcn_kws=fcn_kws, iter_cb=iter_cb, nan_policy=nan_policy,
-                           scale_covar=scale_covar, calc_covar=calc_covar, **fit_kws)
+        Minimizer.__init__(self, model._residual, params,
+                           fcn_args=fcn_args, fcn_kws=fcn_kws,
+                           iter_cb=iter_cb, nan_policy=nan_policy,
+                           scale_covar=scale_covar, calc_covar=calc_covar,
+                           max_nfev=max_nfev, **fit_kws)
 
     def fit(self, data=None, params=None, weights=None, method=None,
             nan_policy=None, **kwargs):
@@ -1346,7 +1357,7 @@ class ModelResult(Minimizer):
         if method is not None:
             self.method = method
         if nan_policy is not None:
-            self.nan_policy = validate_nan_policy(nan_policy)
+            self.nan_policy = nan_policy
 
         self.ci_out = None
         self.userargs = (self.data, self.weights)
@@ -1464,6 +1475,8 @@ class ModelResult(Minimizer):
         covar = self.covar
         fjac = np.zeros((nvarys, ndata))
         df2 = np.zeros(ndata)
+        if any([p.stderr is None for p in self.params.values()]):
+            return df2
 
         # find derivative by hand!
         pars = self.params.copy()
@@ -1563,7 +1576,14 @@ class ModelResult(Minimizer):
                             show_correl=show_correl,
                             min_correl=min_correl, sort_pars=sort_pars)
         modname = self.model._reprstring(long=True)
-        return '[[Model]]\n    %s\n%s\n' % (modname, report)
+        return '[[Model]]\n    %s\n%s' % (modname, report)
+
+    def _repr_html_(self, show_correl=True, min_correl=0.1):
+        """Returns a HTML representation of parameters data."""
+        report = fitreport_html_table(self, show_correl=show_correl,
+                                      min_correl=min_correl)
+        modname = self.model._reprstring(long=True)
+        return "<h2> Model</h2> %s %s" % (modname, report)
 
     def dumps(self, **kws):
         """Represent ModelResult as a JSON string.
@@ -1597,7 +1617,10 @@ class ModelResult(Minimizer):
                      'nfree', 'nvarys', 'redchi', 'scale_covar', 'calc_covar',
                      'success', 'userargs', 'userkws', 'values', 'var_names',
                      'weights', 'user_options'):
-            val = getattr(self, attr)
+            try:
+                val = getattr(self, attr)
+            except AttributeError:
+                continue
             if isinstance(val, np.bool_):
                 val = bool(val)
             out[attr] = encode4js(val)
@@ -1615,9 +1638,8 @@ class ModelResult(Minimizer):
 
         Returns
         -------
-        None or int
-            Return value from `fp.write()`. None for Python 2.7 and the
-            number of characters written in Python 3.
+        int
+            Return value from `fp.write()`: the number of characters written.
 
         See Also
         --------
@@ -1663,7 +1685,7 @@ class ModelResult(Minimizer):
         self.params = Parameters()
         state = {'unique_symbols': modres['unique_symbols'], 'params': []}
         for parstate in modres['params']:
-            _par = Parameter()
+            _par = Parameter(name='')
             _par.__setstate__(parstate)
             state['params'].append(_par)
         self.params.__setstate__(state)
@@ -1679,6 +1701,13 @@ class ModelResult(Minimizer):
             setattr(self, attr, decode4js(modres.get(attr, None)))
 
         self.best_fit = self.model.eval(self.params, **self.userkws)
+        if len(self.userargs) == 2:
+            self.data = self.userargs[0]
+            self.weights = self.userargs[1]
+        self.init_params = self.model.make_params(**self.init_values)
+        self.result = MinimizerResult()
+        self.result.params = self.params
+        self.init_vals = list(self.init_values.items())
         return self
 
     def load(self, fp, funcdefs=None, **kws):
@@ -1779,6 +1808,7 @@ class ModelResult(Minimizer):
         ModelResult.plot : Plot the fit results and residuals using matplotlib.
 
         """
+        from matplotlib import pyplot as plt
         if data_kws is None:
             data_kws = {}
         if fit_kws is None:
@@ -1897,6 +1927,7 @@ class ModelResult(Minimizer):
         ModelResult.plot : Plot the fit results and residuals using matplotlib.
 
         """
+        from matplotlib import pyplot as plt
         if data_kws is None:
             data_kws = {}
         if fit_kws is None:

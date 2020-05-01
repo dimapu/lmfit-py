@@ -1,3 +1,5 @@
+import functools
+import sys
 import unittest
 import warnings
 
@@ -19,30 +21,46 @@ def assert_results_close(actual, desired, rtol=1e-03, atol=1e-03, err_msg='',
 
 def _skip_if_no_pandas():
     try:
-        import pandas
+        import pandas  # noqa: F401
     except ImportError:
         raise pytest.skip("Skipping tests that require pandas.")
 
 
-class CommonTests(object):
+def firstarg_ndarray(func):
+    """a simple wrapper used for testing that wrapped
+    functions can be model functions"""
+    @functools.wraps(func)
+    def wrapper(x, *args, **kws):
+        x = np.asarray(x)
+        return func(x, *args, **kws)
+    return wrapper
+
+
+@firstarg_ndarray
+def linear_func(x, a, b):
+    "test wrapped model function"
+    return a*x+b
+
+
+class CommonTests:
     # to be subclassed for testing predefined models
 
     def setUp(self):
         np.random.seed(1)
-        self.noise = 0.0001*np.random.randn(*self.x.shape)
+        self.noise = 0.0001*np.random.randn(self.x.size)
         # Some Models need args (e.g., polynomial order), and others don't.
         try:
             args = self.args
         except AttributeError:
             self.model = self.model_constructor()
-            self.model_drop = self.model_constructor(missing='drop')
-            self.model_raise = self.model_constructor(missing='raise')
+            self.model_omit = self.model_constructor(nan_policy='omit')
+            self.model_raise = self.model_constructor(nan_policy='raise')
             self.model_explicit_var = self.model_constructor(['x'])
             func = self.model.func
         else:
             self.model = self.model_constructor(*args)
-            self.model_drop = self.model_constructor(*args, missing='drop')
-            self.model_raise = self.model_constructor(*args, missing='raise')
+            self.model_omit = self.model_constructor(*args, nan_policy='omit')
+            self.model_raise = self.model_constructor(*args, nan_policy='raise')
             self.model_explicit_var = self.model_constructor(
                 *args, independent_vars=['x'])
             func = self.model.func
@@ -61,12 +79,12 @@ class CommonTests(object):
         assert_results_close(result.values, self.true_values())
 
         # Pass inidividual Parameter objects as kwargs.
-        kwargs = dict((name, p) for name, p in params.items())
+        kwargs = {name: p for name, p in params.items()}
         result = self.model.fit(self.data, x=self.x, **kwargs)
         assert_results_close(result.values, self.true_values())
 
         # Pass guess values (not Parameter objects) as kwargs.
-        kwargs = dict((name, p.value) for name, p in params.items())
+        kwargs = {name: p.value for name, p in params.items()}
         result = self.model.fit(self.data, x=self.x, **kwargs)
         assert_results_close(result.values, self.true_values())
 
@@ -93,7 +111,7 @@ class CommonTests(object):
             val2 = out2.values[parname]
             if max_diff < abs(val1-val2):
                 max_diff = abs(val1-val2)
-        assert(max_diff > 1.e-8)
+        assert max_diff > 1.e-8
 
     def test_result_attributes(self):
         pars = self.model.make_params(**self.guess())
@@ -142,12 +160,12 @@ class CommonTests(object):
         pars = self.model.make_params(**self.guess())
         result = self.model.fit(self.data, pars, x=self.x)
         report = result.fit_report()
-        assert("[[Model]]" in report)
-        assert("[[Variables]]" in report)
-        assert("[[Fit Statistics]]" in report)
-        assert(" # function evals   =" in report)
-        assert(" Akaike " in report)
-        assert(" chi-square " in report)
+        assert "[[Model]]" in report
+        assert "[[Variables]]" in report
+        assert "[[Fit Statistics]]" in report
+        assert " # function evals   =" in report
+        assert " Akaike " in report
+        assert " chi-square " in report
 
     def test_data_alignment(self):
         _skip_if_no_pandas()
@@ -165,7 +183,7 @@ class CommonTests(object):
 
         # Skip over missing (NaN) values, aligning via pandas index.
         data.iloc[500:510] = np.nan
-        result = self.model_drop.fit(data, params, x=x)
+        result = self.model_omit.fit(data, params, x=x)
         assert_results_close(result.values, self.true_values())
 
         # Raise if any NaN values are present.
@@ -216,14 +234,13 @@ class CommonTests(object):
 class TestUserDefiniedModel(CommonTests, unittest.TestCase):
     # mainly aimed at checking that the API does what it says it does
     # and raises the right exceptions or warnings when things are not right
-
     def setUp(self):
         self.true_values = lambda: dict(amplitude=7.1, center=1.1, sigma=2.40)
         self.guess = lambda: dict(amplitude=5, center=2, sigma=4)
         # return a fresh copy
         self.model_constructor = (
             lambda *args, **kwargs: Model(gaussian, *args, **kwargs))
-        super(TestUserDefiniedModel, self).setUp()
+        super().setUp()
 
     @property
     def x(self):
@@ -249,7 +266,7 @@ class TestUserDefiniedModel(CommonTests, unittest.TestCase):
         params = self.model.make_params()
         for param_name, value in guess_missing_sigma.items():
             params[param_name].value = value
-        f = lambda: self.model.fit(self.data, params, x=self.x)
+        self.model.fit(self.data, params, x=self.x)
 
     def test_extra_param_issues_warning(self):
         # The function accepts extra params, Model will warn but not raise.
@@ -326,7 +343,7 @@ class TestUserDefiniedModel(CommonTests, unittest.TestCase):
             set_prefix_failed = False
         except AttributeError:
             set_prefix_failed = True
-        except:
+        except Exception:
             set_prefix_failed = None
         self.assertFalse(set_prefix_failed)
 
@@ -443,10 +460,46 @@ class TestUserDefiniedModel(CommonTests, unittest.TestCase):
         self.assertTrue(abs(result.params['bkg_c'].value - 1.0) < 0.25)
 
         comps = mod.eval_components(x=self.x)
-        assert('bkg_' in comps)
+        assert 'bkg_' in comps
 
     def test_composite_has_bestvalues(self):
         # test that a composite model has non-empty best_values
+        model1 = models.GaussianModel(prefix='g1_')
+        model2 = models.GaussianModel(prefix='g2_')
+
+        mod = model1 + model2
+        pars = mod.make_params()
+
+        values1 = dict(amplitude=7.10, center=1.1, sigma=2.40)
+        values2 = dict(amplitude=12.2, center=2.5, sigma=0.5)
+        data = (gaussian(x=self.x, **values1) + gaussian(x=self.x, **values2)
+                + 0.1*self.noise)
+
+        pars['g1_sigma'].set(value=2)
+        pars['g1_center'].set(value=1, max=1.5)
+        pars['g1_amplitude'].set(value=3)
+        pars['g2_sigma'].set(value=1)
+        pars['g2_center'].set(value=2.6, min=2.0)
+        pars['g2_amplitude'].set(value=1)
+
+        result = mod.fit(data, params=pars, x=self.x)
+
+        self.assertTrue(len(result.best_values) == 6)
+
+        self.assertTrue(abs(result.params['g1_amplitude'].value - 7.1) < 0.5)
+        self.assertTrue(abs(result.params['g2_amplitude'].value - 12.2) < 0.5)
+        self.assertTrue(abs(result.params['g1_center'].value - 1.1) < 0.2)
+        self.assertTrue(abs(result.params['g2_center'].value - 2.5) < 0.2)
+
+        for _, par in pars.items():
+            assert len(repr(par)) > 5
+
+    def test_composite_plotting(self):
+        # test that a composite model has non-empty best_values
+        pytest.importorskip("matplotlib")
+        import matplotlib
+        matplotlib.use('Agg')
+
         model1 = models.GaussianModel(prefix='g1_')
         model2 = models.GaussianModel(prefix='g2_')
 
@@ -466,13 +519,14 @@ class TestUserDefiniedModel(CommonTests, unittest.TestCase):
         pars['g2_amplitude'].set(1)
 
         result = mod.fit(data, params=pars, x=self.x)
+        fig, ax = result.plot(show_init=True)
 
-        self.assertTrue(len(result.best_values) == 6)
+        assert isinstance(fig, matplotlib.figure.Figure)
+        assert isinstance(ax, matplotlib.axes.GridSpec)
 
-        self.assertTrue(abs(result.params['g1_amplitude'].value - 7.1) < 0.5)
-        self.assertTrue(abs(result.params['g2_amplitude'].value - 12.2) < 0.5)
-        self.assertTrue(abs(result.params['g1_center'].value - 1.1) < 0.2)
-        self.assertTrue(abs(result.params['g2_center'].value - 2.5) < 0.2)
+        comps = result.eval_components(x=self.x)
+        assert len(comps) == 2
+        assert 'g1_' in comps
 
     def test_hints_in_composite_models(self):
         # test propagation of hints from base models to composite model
@@ -487,7 +541,7 @@ class TestUserDefiniedModel(CommonTests, unittest.TestCase):
 
         mx = (m1 + m2)
         params = mx.make_params()
-        param_values = dict((name, p.value) for name, p in params.items())
+        param_values = {name: p.value for name, p in params.items()}
         self.assertEqual(param_values['p1_amplitude'], 1)
         self.assertEqual(param_values['p2_amplitude'], 2)
 
@@ -503,9 +557,9 @@ class TestUserDefiniedModel(CommonTests, unittest.TestCase):
         m2 = models.GaussianModel(prefix='m2_')
         params.update(m2.make_params())
 
-        m = m1 + m2
+        _m = m1 + m2  # noqa: F841
 
-        param_values = dict((name, p.value) for name, p in params.items())
+        param_values = {name: p.value for name, p in params.items()}
         self.assertTrue(param_values['m1_intercept'] < -0.0)
         self.assertEqual(param_values['m2_amplitude'], 1)
 
@@ -534,11 +588,10 @@ class TestUserDefiniedModel(CommonTests, unittest.TestCase):
 
     def test_composite_model_with_expr_constrains(self):
         """Smoke test for composite model fitting with expr constraints."""
-        y = [0,   0,   4,   2,   1,   8,  21,  21,  23,  35,  50,  54,  46,
-             70,   77,  87,  98, 113, 148, 136, 185, 195, 194, 168, 170, 139,
-             155, 115, 132, 109, 102,  85,  69,  81,  82,  80,  71,  64,  79,
-             88,  111,  97,  97,  73,  72,  62,  41,  30,  13,   3,   9,   7,
-             0,     0,   0]
+        y = [0, 0, 4, 2, 1, 8, 21, 21, 23, 35, 50, 54, 46, 70, 77, 87, 98,
+             113, 148, 136, 185, 195, 194, 168, 170, 139, 155, 115, 132, 109,
+             102, 85, 69, 81, 82, 80, 71, 64, 79, 88, 111, 97, 97, 73, 72, 62,
+             41, 30, 13, 3, 9, 7, 0, 0, 0]
         x = np.arange(-0.2, 1.2, 0.025)[:-1] + 0.5*0.025
 
         def gauss(x, sigma, mu, A):
@@ -568,6 +621,7 @@ class TestUserDefiniedModel(CommonTests, unittest.TestCase):
         self.assertTrue(result.params['pos_delta'].value > 0)
 
     def test_model_nan_policy(self):
+        """Tests for nan_policy with NaN values in the input data."""
         x = np.linspace(0, 10, 201)
         np.random.seed(0)
         y = gaussian(x, 10.0, 6.15, 0.8)
@@ -575,14 +629,18 @@ class TestUserDefiniedModel(CommonTests, unittest.TestCase):
         y += gaussian(x, 0.25, 6.00, 7.5)
         y += np.random.normal(size=len(x), scale=0.5)
 
+        # with NaN values in the input data
         y[55] = y[91] = np.nan
         mod = PseudoVoigtModel()
         params = mod.make_params(amplitude=20, center=5.5,
                                  sigma=1, fraction=0.25)
         params['fraction'].vary = False
+
         # with raise, should get a ValueError
         result = lambda: mod.fit(y, params, x=x, nan_policy='raise')
-        self.assertRaises(ValueError, result)
+        msg = ('NaN values detected in your input data or the output of your '
+               'objective/model function - fitting algorithms cannot handle this!')
+        self.assertRaisesRegex(ValueError, msg, result)
 
         # with propagate, should get no error, but bad results
         result = mod.fit(y, params, x=x, nan_policy='propagate')
@@ -603,6 +661,52 @@ class TestUserDefiniedModel(CommonTests, unittest.TestCase):
         self.assertTrue(abs(result.params['amplitude'].value - 20.0) < 5.0)
         self.assertTrue(abs(result.params['center'].value - 6.0) < 0.5)
 
+        # with 'wrong_argument', should get a ValueError
+        err_msg = r"nan_policy must be 'propagate', 'omit', or 'raise'."
+        with pytest.raises(ValueError, match=err_msg):
+            mod.fit(y, params, x=x, nan_policy='wrong_argument')
+
+    def test_model_nan_policy_NaNs_by_model(self):
+        """Test for nan_policy with NaN values generated by the model function."""
+        def double_exp(x, a1, t1, a2, t2):
+            return a1*np.exp(-x/t1) + a2*np.exp(-(x-0.1) / t2)
+
+        model = Model(double_exp)
+
+        truths = (3.0, 2.0, -5.0, 10.0)
+        x = np.linspace(1, 10, 250)
+        np.random.seed(0)
+        y = double_exp(x, *truths) + 0.1*np.random.randn(x.size)
+
+        p = model.make_params(a1=4, t1=3, a2=4, t2=3)
+        result = lambda: model.fit(data=y, params=p, x=x, method='Nelder',
+                                   nan_policy='raise')
+
+        msg = 'The model function generated NaN values and the fit aborted!'
+        self.assertRaisesRegex(ValueError, msg, result)
+
+    @pytest.mark.skipif(sys.version_info.major == 2,
+                        reason="cannot use wrapped functions with Python 2")
+    def test_wrapped_model_func(self):
+        x = np.linspace(-1, 1, 51)
+        y = 2.0*x + 3 + 0.0003 * x*x
+        y += np.random.normal(size=len(x), scale=0.025)
+        mod = Model(linear_func)
+        pars = mod.make_params(a=1.5, b=2.5)
+
+        tmp = mod.eval(pars, x=x)
+
+        self.assertTrue(tmp.max() > 3)
+        self.assertTrue(tmp.min() > -20)
+
+        result = mod.fit(y, pars, x=x)
+        self.assertTrue(result.chisqr < 0.05)
+        self.assertTrue(result.aic < -350)
+        self.assertTrue(result.errorbars)
+
+        self.assertTrue(abs(result.params['a'].value - 2.0) < 0.05)
+        self.assertTrue(abs(result.params['b'].value - 3.0) < 0.41)
+
 
 class TestLinear(CommonTests, unittest.TestCase):
 
@@ -610,7 +714,7 @@ class TestLinear(CommonTests, unittest.TestCase):
         self.true_values = lambda: dict(slope=5, intercept=2)
         self.guess = lambda: dict(slope=10, intercept=6)
         self.model_constructor = models.LinearModel
-        super(TestLinear, self).setUp()
+        super().setUp()
 
 
 class TestParabolic(CommonTests, unittest.TestCase):
@@ -619,7 +723,7 @@ class TestParabolic(CommonTests, unittest.TestCase):
         self.true_values = lambda: dict(a=5, b=2, c=8)
         self.guess = lambda: dict(a=1, b=6, c=3)
         self.model_constructor = models.ParabolicModel
-        super(TestParabolic, self).setUp()
+        super().setUp()
 
 
 class TestPolynomialOrder2(CommonTests, unittest.TestCase):
@@ -629,7 +733,7 @@ class TestPolynomialOrder2(CommonTests, unittest.TestCase):
         self.guess = lambda: dict(c1=1, c2=6, c0=3)
         self.model_constructor = models.PolynomialModel
         self.args = (2,)
-        super(TestPolynomialOrder2, self).setUp()
+        super().setUp()
 
 
 class TestPolynomialOrder3(CommonTests, unittest.TestCase):
@@ -639,7 +743,7 @@ class TestPolynomialOrder3(CommonTests, unittest.TestCase):
         self.guess = lambda: dict(c3=1, c1=1, c2=6, c0=3)
         self.model_constructor = models.PolynomialModel
         self.args = (3,)
-        super(TestPolynomialOrder3, self).setUp()
+        super().setUp()
 
 
 class TestConstant(CommonTests, unittest.TestCase):
@@ -647,7 +751,7 @@ class TestConstant(CommonTests, unittest.TestCase):
         self.true_values = lambda: dict(c=5)
         self.guess = lambda: dict(c=2)
         self.model_constructor = models.ConstantModel
-        super(TestConstant, self).setUp()
+        super().setUp()
 
     def check_skip_independent_vars(self):
         raise pytest.skip("ConstantModel has not independent_vars.")
@@ -658,7 +762,7 @@ class TestPowerlaw(CommonTests, unittest.TestCase):
         self.true_values = lambda: dict(amplitude=5, exponent=3)
         self.guess = lambda: dict(amplitude=2, exponent=8)
         self.model_constructor = models.PowerLawModel
-        super(TestPowerlaw, self).setUp()
+        super().setUp()
 
 
 class TestExponential(CommonTests, unittest.TestCase):
@@ -666,7 +770,7 @@ class TestExponential(CommonTests, unittest.TestCase):
         self.true_values = lambda: dict(amplitude=5, decay=3)
         self.guess = lambda: dict(amplitude=2, decay=8)
         self.model_constructor = models.ExponentialModel
-        super(TestExponential, self).setUp()
+        super().setUp()
 
 
 class TestComplexConstant(CommonTests, unittest.TestCase):
@@ -674,7 +778,7 @@ class TestComplexConstant(CommonTests, unittest.TestCase):
         self.true_values = lambda: dict(re=5, im=5)
         self.guess = lambda: dict(re=2, im=2)
         self.model_constructor = models.ComplexConstantModel
-        super(TestComplexConstant, self).setUp()
+        super().setUp()
 
 
 class TestExpression(CommonTests, unittest.TestCase):
@@ -684,7 +788,7 @@ class TestExpression(CommonTests, unittest.TestCase):
         self.expression = "off_c + amp_c * exp(-x/x0)"
         self.model_constructor = (
             lambda *args, **kwargs: models.ExpressionModel(self.expression, *args, **kwargs))
-        super(TestExpression, self).setUp()
+        super().setUp()
 
     def test_composite_with_expression(self):
         expression_model = models.ExpressionModel("exp(-x/x0)", name='exp')

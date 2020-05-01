@@ -1,5 +1,3 @@
-#!/usr/bin/env python
-
 # <examples/doc_fitting_emcee.py>
 import numpy as np
 
@@ -10,6 +8,7 @@ try:
     HASPYLAB = True
 except ImportError:
     HASPYLAB = False
+HASPYLAB = False
 
 try:
     import corner
@@ -20,10 +19,9 @@ except ImportError:
 x = np.linspace(1, 10, 250)
 np.random.seed(0)
 y = (3.0*np.exp(-x/2) - 5.0*np.exp(-(x-0.1) / 10.) +
-     0.1*np.random.randn(len(x)))
+     0.1*np.random.randn(x.size))
 if HASPYLAB:
     plt.plot(x, y, 'b')
-    # plt.savefig('../doc/_images/emcee_dbl_exp.png')
     plt.show()
 
 p = lmfit.Parameters()
@@ -35,13 +33,13 @@ def residual(p):
     return v['a1']*np.exp(-x/v['t1']) + v['a2']*np.exp(-(x-0.1) / v['t2']) - y
 
 
-mi = lmfit.minimize(residual, p, method='Nelder', nan_policy='omit')
+mi = lmfit.minimize(residual, p, method='nelder', nan_policy='omit')
 lmfit.printfuncs.report_fit(mi.params, min_correl=0.5)
 if HASPYLAB:
     plt.figure()
     plt.plot(x, y, 'b')
-    plt.plot(x, residual(mi.params) + y, 'r')
-    # plt.savefig('../doc/_images/emcee_dbl_exp2.png')
+    plt.plot(x, residual(mi.params) + y, 'r', label='best fit')
+    plt.legend(loc='best')
     plt.show()
 
 # Place bounds on the ln(sigma) parameter that emcee will automatically add
@@ -49,17 +47,30 @@ if HASPYLAB:
 mi.params.add('__lnsigma', value=np.log(0.1), min=np.log(0.001), max=np.log(2))
 
 res = lmfit.minimize(residual, method='emcee', nan_policy='omit', burn=300,
-                     steps=1000, thin=20, params=mi.params, is_weighted=False)
+                     steps=1000, thin=20, params=mi.params, is_weighted=False,
+                     progress=False)
 
 if HASPYLAB and HASCORNER:
     emcee_corner = corner.corner(res.flatchain, labels=res.var_names,
                                  truths=list(res.params.valuesdict().values()))
-    # emcee_corner.savefig('../doc/_images/emcee_corner.png')
     plt.show()
+
+if HASPYLAB:
+    plt.plot(res.acceptance_fraction)
+    plt.xlabel('walker')
+    plt.ylabel('acceptance fraction')
+    plt.show()
+
+if hasattr(res, "acor"):
+    print("Autocorrelation time for the parameters:")
+    print("----------------------------------------")
+    for i, par in enumerate(p):
+        print(par, res.acor[i])
 
 print("\nmedian of posterior probability distribution")
 print('--------------------------------------------')
 lmfit.report_fit(res.params)
+
 
 # find the maximum likelihood solution
 highest_prob = np.argmax(res.lnprob)
@@ -67,9 +78,14 @@ hp_loc = np.unravel_index(highest_prob, res.lnprob.shape)
 mle_soln = res.chain[hp_loc]
 for i, par in enumerate(p):
     p[par].value = mle_soln[i]
-print("\nMaximum likelihood Estimation")
-print('-----------------------------')
-print(p)
+
+print('\nMaximum Likelihood Estimation from emcee       ')
+print('-------------------------------------------------')
+print('Parameter  MLE Value   Median Value   Uncertainty')
+fmt = '  {:5s}  {:11.5f} {:11.5f}   {:11.5f}'.format
+for name, param in p.items():
+    print(fmt(name, param.value, res.params[name].value,
+              res.params[name].stderr))
 
 if HASPYLAB:
     plt.figure()
@@ -79,7 +95,17 @@ if HASPYLAB:
     plt.legend()
     plt.show()
 
-quantiles = np.percentile(res.flatchain['t1'], [2.28, 15.9, 50, 84.2, 97.7])
-print("1 sigma spread", 0.5 * (quantiles[3] - quantiles[1]))
-print("2 sigma spread", 0.5 * (quantiles[4] - quantiles[0]))
-# <end of examples/doc_fitting_emcee.py>
+print('\nError Estimates from emcee    ')
+print('------------------------------------------------------')
+print('Parameter  -2sigma  -1sigma   median  +1sigma  +2sigma ')
+
+for name in p.keys():
+    quantiles = np.percentile(res.flatchain[name],
+                              [2.275, 15.865, 50, 84.135, 97.275])
+    median = quantiles[2]
+    err_m2 = quantiles[0] - median
+    err_m1 = quantiles[1] - median
+    err_p1 = quantiles[3] - median
+    err_p2 = quantiles[4] - median
+    fmt = '  {:5s}   {:8.4f} {:8.4f} {:8.4f} {:8.4f} {:8.4f}'.format
+    print(fmt(name, err_m2, err_m1, median, err_p1, err_p2))

@@ -1,4 +1,5 @@
 """Tests for the Iteration Callback Function."""
+
 import numpy as np
 import pytest
 
@@ -6,7 +7,7 @@ from lmfit.lineshapes import gaussian
 from lmfit.models import GaussianModel, LinearModel
 
 try:
-    import numdifftools
+    import numdifftools  # noqa: F401
     calc_covar_options = [False, True]
 except ImportError:
     calc_covar_options = [False]
@@ -29,14 +30,14 @@ pars['peak_center'].set(min=5, max=10)
 pars['peak_sigma'].set(min=0.5, max=2)
 
 
-def per_iteration(pars, iter, resid, *args, **kws):
+def per_iteration(pars, iteration, resid, *args, **kws):
     """Iteration callback, will abort at iteration 23."""
-    return iter == 23
+    return iteration == 23
 
 
 @pytest.mark.parametrize("calc_covar", calc_covar_options)
 @pytest.mark.parametrize("method", ['ampgo', 'brute', 'basinhopping',
-                                    'differential_evolution','leastsq',
+                                    'differential_evolution', 'leastsq',
                                     'least_squares', 'nelder'])
 def test_itercb(method, calc_covar):
     """Test the iteration callback for all solvers."""

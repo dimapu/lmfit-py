@@ -1,16 +1,15 @@
 """Parameter class."""
-from __future__ import division
 
 from collections import OrderedDict
 from copy import deepcopy
 import json
 
 from asteval import Interpreter, get_ast_names, valid_symbol_name
-from numpy import arcsin, array, cos, inf, isclose, nan, sin, sqrt
+from numpy import arcsin, array, cos, inf, isclose, sin, sqrt
 import scipy.special
-import uncertainties
 
 from .jsonutils import decode4js, encode4js
+from .printfuncs import params_html_table
 
 SCIPY_FUNCTIONS = {'gamfcn': scipy.special.gamma}
 for name in ('erf', 'erfc', 'wofz'):
@@ -59,7 +58,7 @@ class Parameters(OrderedDict):
             Keyword arguments.
 
         """
-        super(Parameters, self).__init__(self)
+        super().__init__(self)
 
         self._asteval = asteval
         if self._asteval is None:
@@ -72,11 +71,18 @@ class Parameters(OrderedDict):
         for key, val in _syms.items():
             self._asteval.symtable[key] = val
 
-        self.update(*args, **kwds)
-
     def copy(self):
         """Parameters.copy() should always be a deepcopy."""
         return self.__deepcopy__(None)
+
+    def update(self, other):
+        """Update values and symbols with another Parameters object."""
+        if not isinstance(other, Parameters):
+            raise ValueError("'%s' is not a Parameters object" % other)
+        self.add_many(*other.values())
+        for sym in other._asteval.user_defined_symbols():
+            self._asteval.symtable[sym] = other._asteval.symtable[sym]
+        return self
 
     def __copy__(self):
         """Parameters.copy() should always be a deepcopy."""
@@ -118,7 +124,7 @@ class Parameters(OrderedDict):
         return _pars
 
     def __setitem__(self, key, par):
-        """TODO: add magic method docstring."""
+        """Set items of Parameters object."""
         if key not in self:
             if not valid_symbol_name(key):
                 raise KeyError("'%s' is not a valid Parameters name" % key)
@@ -134,16 +140,15 @@ class Parameters(OrderedDict):
         if not isinstance(other, Parameters):
             raise ValueError("'%s' is not a Parameters object" % other)
         out = deepcopy(self)
-        params = other.values()
-        out.add_many(*params)
+        out.add_many(*other.values())
+        for sym in other._asteval.user_defined_symbols():
+            if sym not in out._asteval.symtable:
+                out._asteval.symtable[sym] = other._asteval.symtable[sym]
         return out
 
     def __iadd__(self, other):
         """Add/assign Parameters objects."""
-        if not isinstance(other, Parameters):
-            raise ValueError("'%s' is not a Parameters object" % other)
-        params = other.values()
-        self.add_many(*params)
+        self.update(other)
         return self
 
     def __array__(self):
@@ -182,16 +187,36 @@ class Parameters(OrderedDict):
         # an Error. Another way of doing this would be to remove all the expr
         # from the Parameter instances before they get added, then to restore
         # them.
-        self._asteval.symtable.update(state['unique_symbols'])
+
+        symtab = self._asteval.symtable
+        for key, val in state['unique_symbols'].items():
+            if key not in symtab:
+                symtab[key] = val
 
         # then add all the parameters
         self.add_many(*state['params'])
 
+    def eval(self, expr):
+        """Evaluate a statement using the asteval Interpreter.
+
+        Parameters
+        ----------
+        expr : string
+            An expression containing parameter names and other symbols
+            recognizable by the asteval Interpreter.
+
+        Returns
+        -------
+           The result of the expression.
+
+        """
+        return self._asteval.eval(expr)
+
     def update_constraints(self):
         """Update all constrained parameters, checking that dependencies are
         evaluated as needed."""
-        requires_update = set(name for name, par in self.items()
-                              if par._expr is not None)
+        requires_update = {name for name, par in self.items() if par._expr is
+                           not None}
         updated_tracker = set(requires_update)
 
         def _update_param(name):
@@ -230,7 +255,7 @@ class Parameters(OrderedDict):
 
         """
         if oneline:
-            return super(Parameters, self).__repr__()
+            return super().__repr__()
         s = "Parameters({\n"
         for key in self.keys():
             s += "    '%s': %s, \n" % (key, self[key])
@@ -283,6 +308,10 @@ class Parameters(OrderedDict):
                     pvalues['brute_step'], n=colwidth, p=precision, f=fmt)
             print(line.format(name_len=name_len, n=colwidth, p=precision,
                               f=fmt, **pvalues))
+
+    def _repr_html_(self):
+        """Returns a HTML representation of parameters data."""
+        return params_html_table(self)
 
     def add(self, name, value=None, vary=True, min=-inf, max=inf, expr=None,
             brute_step=None):
@@ -351,12 +380,16 @@ class Parameters(OrderedDict):
         >>> params.add_many(f, g)
 
         """
-        for para in parlist:
-            if isinstance(para, Parameter):
-                self.__setitem__(para.name, para)
-            else:
-                param = Parameter(*para)
-                self.__setitem__(param.name, param)
+        __params = []
+        for par in parlist:
+            if not isinstance(par, Parameter):
+                par = Parameter(*par)
+            __params.append(par)
+            par._delay_asteval = True
+            self.__setitem__(par.name, par)
+
+        for para in __params:
+            para._delay_asteval = False
 
     def valuesdict(self):
         """Return an ordered dictionary of parameter values.
@@ -368,7 +401,7 @@ class Parameters(OrderedDict):
            Parameter.
 
         """
-        return OrderedDict(((p.name, p.value) for p in self.values()))
+        return OrderedDict((p.name, p.value) for p in self.values())
 
     def dumps(self, **kws):
         """Represent Parameters as a JSON string.
@@ -420,11 +453,13 @@ class Parameters(OrderedDict):
         """
         self.clear()
 
-        tmp = decode4js(json.loads(s, **kws))
-        state = {'unique_symbols': tmp['unique_symbols'],
-                 'params': []}
+        tmp = json.loads(s, **kws)
+        unique_symbols = {key: decode4js(tmp['unique_symbols'][key]) for key
+                          in tmp['unique_symbols']}
+
+        state = {'unique_symbols': unique_symbols, 'params': []}
         for parstate in tmp['params']:
-            _par = Parameter()
+            _par = Parameter(name='')
             _par.__setstate__(parstate)
             state['params'].append(_par)
         self.__setstate__(state)
@@ -442,9 +477,8 @@ class Parameters(OrderedDict):
 
         Returns
         -------
-        None or int
-            Return value from `fp.write()`. None for Python 2.7 and the
-            number of characters written in Python 3.
+        int
+            Return value from `fp.write()`: the number of characters written.
 
         See Also
         --------
@@ -476,7 +510,7 @@ class Parameters(OrderedDict):
         return self.loads(fp.read(), **kws)
 
 
-class Parameter(object):
+class Parameter:
     """A Parameter is an object that can be varied in a fit, or one of the
     controlling variables in a model. It is a central component of lmfit,
     and all minimization and modeling methods use Parameter objects.
@@ -487,7 +521,7 @@ class Parameter(object):
     placed on the Parameter's value by setting its `min` and/or `max`
     attributes.  A Parameter can also have its value determined by a
     mathematical expression of other Parameter values held in the `expr`
-    attrribute.  Additional attributes include `brute_step` used as the step
+    attribute.  Additional attributes include `brute_step` used as the step
     size in a brute-force minimization, and `user_data` reserved
     exclusively for user's need.
 
@@ -498,12 +532,12 @@ class Parameter(object):
 
     """
 
-    def __init__(self, name=None, value=None, vary=True, min=-inf, max=inf,
+    def __init__(self, name, value=None, vary=True, min=-inf, max=inf,
                  expr=None, brute_step=None, user_data=None):
         """
         Parameters
         ----------
-        name : str, optional
+        name : str
             Name of the Parameter.
         value : float, optional
             Numerical Parameter value.
@@ -532,7 +566,6 @@ class Parameter(object):
 
         """
         self.name = name
-        self._val = value
         self.user_data = user_data
         self.init_value = value
         self.min = min
@@ -547,6 +580,7 @@ class Parameter(object):
         self.stderr = None
         self.correl = None
         self.from_internal = lambda val: val
+        self._val = value
         self._init_bounds()
 
     def set(self, value=None, vary=None, min=None, max=None, expr=None,
@@ -597,10 +631,6 @@ class Parameter(object):
             par.set(brute_step=0)     # removes brute_step
 
         """
-        if value is not None:
-            self.value = value
-            self.__set_expression('')
-
         if vary is not None:
             self.vary = vary
             if vary:
@@ -611,6 +641,12 @@ class Parameter(object):
 
         if max is not None:
             self.max = max
+
+        # need to set this after min and max, so that it will use new
+        # bounds in the setter for value
+        if value is not None:
+            self.value = value
+            self.__set_expression("")
 
         if expr is not None:
             self.__set_expression(expr)
@@ -648,32 +684,31 @@ class Parameter(object):
 
     def __setstate__(self, state):
         """Set state for pickle."""
-        (self.name, self.value, self.vary, self.expr, self.min, self.max,
+        (self.name, _value, self.vary, self.expr, self.min, self.max,
          self.brute_step, self.stderr, self.correl, self.init_value,
          self.user_data) = state
         self._expr_ast = None
         self._expr_eval = None
         self._expr_deps = []
         self._delay_asteval = False
+        self.value = _value
         self._init_bounds()
 
     def __repr__(self):
         """Return printable representation of a Parameter object."""
         s = []
-        if self.name is not None:
-            s.append("'%s'" % self.name)
-        sval = repr(self._getval())
+        sval = "value=%s" % repr(self._getval())
         if not self.vary and self._expr is None:
-            sval = "value=%s (fixed)" % sval
+            sval += " (fixed)"
         elif self.stderr is not None:
-            sval = "value=%s +/- %.3g" % (sval, self.stderr)
+            sval += " +/- %.3g" % self.stderr
         s.append(sval)
         s.append("bounds=[%s:%s]" % (repr(self.min), repr(self.max)))
         if self._expr is not None:
             s.append("expr='%s'" % self.expr)
         if self.brute_step is not None:
             s.append("brute_step=%s" % (self.brute_step))
-        return "<Parameter %s>" % ', '.join(s)
+        return "<Parameter '%s', %s>" % (self.name, ', '.join(s))
 
     def setup_bounds(self):
         """Set up Minuit-style internal/external parameter transformation of
@@ -741,41 +776,17 @@ class Parameter(object):
         """Get value, with bounds applied."""
         # Note assignment to self._val has been changed to self.value
         # The self.value property setter makes sure that the
-        # _expr_eval.symtable is kept updated.
-        # If you just assign to self._val then
-        # _expr_eval.symtable[self.name]
+        # _expr_eval.symtable is kept up-to-date.
+        # If you just assign to self._val then _expr_eval.symtable[self.name]
         # becomes stale if parameter.expr is not None.
-        if (isinstance(self._val, uncertainties.core.Variable) and
-                self._val is not nan):
-
-            try:
-                self.value = self._val.nominal_value
-            except AttributeError:
-                pass
-        if not self.vary and self._expr is None:
-            return self._val
-
         if self._expr is not None:
             if self._expr_ast is None:
                 self.__set_expression(self._expr)
-
             if self._expr_eval is not None:
                 if not self._delay_asteval:
                     self.value = self._expr_eval(self._expr_ast)
                     check_ast_errors(self._expr_eval)
-
-        if self._val is not None:
-            if self._val > self.max:
-                self._val = self.max
-            elif self._val < self.min:
-                self._val = self.min
-        if self._expr_eval is not None:
-            self._expr_eval.symtable[self.name] = self._val
         return self._val
-
-    def set_expr_eval(self, evaluator):
-        """Set expression evaluator instance."""
-        self._expr_eval = evaluator
 
     @property
     def value(self):
@@ -786,10 +797,15 @@ class Parameter(object):
     def value(self, val):
         """Set the numerical Parameter value."""
         self._val = val
+        if self._val is not None:
+            if self._val > self.max:
+                self._val = self.max
+            elif self._val < self.min:
+                self._val = self.min
         if not hasattr(self, '_expr_eval'):
             self._expr_eval = None
         if self._expr_eval is not None:
-            self._expr_eval.symtable[self.name] = val
+            self._expr_eval.symtable[self.name] = self._val
 
     @property
     def expr(self):
@@ -844,8 +860,8 @@ class Parameter(object):
         """positive"""
         return +self._getval()
 
-    def __nonzero__(self):
-        """not zero"""
+    def __bool__(self):
+        """bool"""
         return self._getval() != 0
 
     def __int__(self):
@@ -868,10 +884,9 @@ class Parameter(object):
         """-"""
         return self._getval() - other
 
-    def __div__(self, other):
+    def __truediv__(self, other):
         """/"""
         return self._getval() / other
-    __truediv__ = __div__
 
     def __floordiv__(self, other):
         """//"""
@@ -921,10 +936,9 @@ class Parameter(object):
         """+ (right)"""
         return other + self._getval()
 
-    def __rdiv__(self, other):
+    def __rtruediv__(self, other):
         """/ (right)"""
         return other / self._getval()
-    __rtruediv__ = __rdiv__
 
     def __rdivmod__(self, other):
         """divmod (right)"""
@@ -949,9 +963,3 @@ class Parameter(object):
     def __rsub__(self, other):
         """- (right)"""
         return other - self._getval()
-
-
-def isParameter(x):
-    """Test for Parameter-ness."""
-    return (isinstance(x, Parameter) or
-            x.__class__.__name__ == 'Parameter')

@@ -4,7 +4,6 @@ Non-Linear Least-Squares Minimization and Curve-Fitting for Python
 ===========================================================================
 
 .. _Levenberg-Marquardt:     https://en.wikipedia.org/wiki/Levenberg-Marquardt_algorithm
-.. _MINPACK-1:               https://en.wikipedia.org/wiki/MINPACK
 .. _scipy.optimize:      https://docs.scipy.org/doc/scipy/reference/optimize.html
 .. _lmfit GitHub repository:   https://github.com/lmfit/lmfit-py
 
@@ -32,7 +31,10 @@ enhancements to optimization and data fitting problems, including:
     uncertainties and correlations from the covariance matrix, the accuracy
     of these estimates is sometimes questionable.  To help address this,
     lmfit has functions to explicitly explore parameter space and determine
-    confidence levels even for the most difficult cases.
+    confidence levels even for the most difficult cases. Additionally, lmfit
+    will use the ``numdifftools`` package (if installed) to estimate parameter
+    uncertainties and correlations for algorithms that do not natively
+    support this in SciPy.
 
   * Improved curve-fitting with the :class:`~lmfit.model.Model` class.  This
     extends the capabilities of :scipydoc:`optimize.curve_fit`, allowing
@@ -62,3 +64,4 @@ participating in this effort please use the `lmfit GitHub repository`_.
    bounds
    constraints
    whatsnew
+   examples/index
